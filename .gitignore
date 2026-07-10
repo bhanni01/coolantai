@@ -1,0 +1,31 @@
+# --- Python ---
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.venv/
+venv/
+
+# --- Secrets & environment ---
+.env
+.env.*
+!.env.example
+
+# --- Data stores & generated run artifacts ---
+chroma_db/
+outputs/
+reports/
+data/injection_spec.json
+
+# --- Node / frontend build output ---
+node_modules/
+dist/
+
+# --- OS / editor / local tooling ---
+.DS_Store
+.firecrawl/
+.gstack/
+
+# --- Local-only docs (kept on disk for local sessions, not tracked) ---
+CLAUDE.md
+frontend/README.md
