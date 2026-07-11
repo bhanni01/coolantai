@@ -1,0 +1,34 @@
+{
+  "name": "DC-Coolant-A",
+  "application": "single_phase_immersion",
+  "description": "PFAS-free single-phase immersion coolant for hyperscale racks.",
+  "property_targets": [
+    {
+      "property": "thermal_conductivity",
+      "min_value": 0.13,
+      "unit": "W/m·K",
+      "priority": "must"
+    },
+    {
+      "property": "flash_point",
+      "min_value": 150,
+      "unit": "°C",
+      "priority": "must"
+    },
+    {
+      "property": "kinematic_viscosity",
+      "max_value": 50,
+      "unit": "cSt",
+      "priority": "should"
+    },
+    {
+      "property": "cost",
+      "max_value": 12,
+      "unit": "USD/L",
+      "priority": "should"
+    }
+  ],
+  "regulatory_regions": ["US", "EU"],
+  "pfas_free_required": true,
+  "excluded_substances": []
+}
