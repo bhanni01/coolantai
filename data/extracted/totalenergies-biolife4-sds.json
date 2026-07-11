@@ -1,0 +1,34 @@
+{
+  "fluid_name": "DC COOLING BIOLIFE 4",
+  "manufacturer": "TotalEnergies",
+  "base_chemistry": "other",
+  "pfas_free_claim": null,
+  "cas_number": "90622-53-0",
+  "source_document": "totalenergies-biolife4-sds.pdf",
+  "properties": [
+    {
+      "property": "density",
+      "value": 0.785,
+      "unit": "g/cm³",
+      "confidence": 1.0
+    },
+    {
+      "property": "flash_point",
+      "value": 135.0,
+      "unit": "°C",
+      "confidence": 1.0
+    },
+    {
+      "property": "pour_point",
+      "value": -35.0,
+      "unit": "°C",
+      "confidence": 1.0
+    },
+    {
+      "property": "kinematic_viscosity",
+      "value": 4.5,
+      "unit": "mm²/s",
+      "confidence": 1.0
+    }
+  ]
+}

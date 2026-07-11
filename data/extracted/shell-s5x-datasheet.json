@@ -1,0 +1,58 @@
+{
+  "fluid_name": "Shell Immersion Cooling Fluid S5 X",
+  "manufacturer": "Shell",
+  "base_chemistry": "synthetic_ester",
+  "pfas_free_claim": null,
+  "cas_number": null,
+  "source_document": "shell-s5x-datasheet.pdf",
+  "properties": [
+    {
+      "property": "density",
+      "value": 806.0,
+      "unit": "kg/m3",
+      "confidence": 1.0
+    },
+    {
+      "property": "flash_point",
+      "value": 200.0,
+      "unit": "°C",
+      "confidence": 1.0
+    },
+    {
+      "property": "pour_point",
+      "value": -36.0,
+      "unit": "°C",
+      "confidence": 1.0
+    },
+    {
+      "property": "kinematic_viscosity",
+      "value": 9.8,
+      "unit": "mm2/s",
+      "confidence": 1.0
+    },
+    {
+      "property": "specific_heat",
+      "value": 2274.0,
+      "unit": "J/kg*K",
+      "confidence": 1.0
+    },
+    {
+      "property": "thermal_conductivity",
+      "value": 0.142,
+      "unit": "W/m*K",
+      "confidence": 1.0
+    },
+    {
+      "property": "dielectric_strength",
+      "value": 42.0,
+      "unit": "kV",
+      "confidence": 1.0
+    },
+    {
+      "property": "density",
+      "value": 806.0,
+      "unit": "kg/m3",
+      "confidence": 1.0
+    }
+  ]
+}
