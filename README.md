@@ -2,7 +2,7 @@
 
 Multi-agent (LangGraph) system that takes a target spec for a PFAS-free data
 center coolant and produces (1) a ranked shortlist of candidate formulations and
-(2) a DOE lab validation plan. See [CLAUDE.md](CLAUDE.md) for the architecture.
+(2) a DOE lab validation plan.
 
 ## Setup
 
