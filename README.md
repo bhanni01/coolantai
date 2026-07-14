@@ -95,8 +95,33 @@ uvicorn api.main:app --reload        # from the repo root
 - `GET /run/{run_id}/events` — Server-Sent Events, one per graph node as it
   finishes (`node_name`, `status`, `output_summary`, `timestamp`,
   `loop_iteration`), ending with a `complete` event carrying the ranked
-  candidates, DOE plan, and token/cost summary. CORS is enabled for
-  `http://localhost:5173`.
+  candidates, DOE plan, and token/cost summary.
+- `GET /health` — returns 200; used as the Render health check (and handy for
+  a free uptime pinger to avoid free-tier cold starts).
+
+If `frontend/dist` exists, the same app serves the built dashboard from `/`,
+so frontend and backend share one origin and no CORS setup is needed. During
+development the Vite dev server (`npm run dev` in `frontend/`) proxies `/run`
+and `/health` to `localhost:8000` instead.
+
+## Deployment (Render)
+
+`render.yaml` defines a single free-plan web service that builds the frontend
+and serves it from the FastAPI app:
+
+1. On [Render](https://render.com), create a **New → Blueprint** and connect
+   this GitHub repo — it picks up `render.yaml` automatically. (Or create a
+   web service manually and copy the build/start commands from the file.)
+2. Select the **Free** plan.
+3. Fill in the environment variables when prompted: `OPENAI_API_KEY`
+   (required), plus `LANGSMITH_API_KEY`, `LANGSMITH_TRACING`, and
+   `LANGSMITH_PROJECT` if you want tracing.
+4. Deploy. On each deploy/restart the start command runs `scripts/ingest.py`
+   first, so Chroma is repopulated before the server accepts requests (the
+   free tier's disk is ephemeral).
+
+Note the free tier spins the service down after ~15 minutes of inactivity; a
+free uptime pinger hitting `GET /health` keeps it warm.
 
 ## Testing
 

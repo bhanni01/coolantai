@@ -9,9 +9,10 @@ import type {
   Verdict,
 } from './types'
 
+// Same-origin by default: the FastAPI app serves the built frontend, so /run
+// etc. are relative paths. In dev the Vite proxy forwards them to the backend.
 export const API_BASE: string =
-  (import.meta.env.VITE_API_BASE as string | undefined)?.replace(/\/$/, '') ??
-  'http://localhost:8000'
+  (import.meta.env.VITE_API_BASE as string | undefined)?.replace(/\/$/, '') ?? ''
 
 /** POST the datacenter profile; returns the run_id the events stream is keyed on. */
 export async function postRun(

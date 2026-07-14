@@ -1,0 +1,28 @@
+# Render blueprint: one free-plan web service serving both the FastAPI
+# backend and the built frontend (mounted as static files by api/main.py).
+services:
+  - type: web
+    name: coolant-copilot
+    runtime: python
+    plan: free
+    # Backend deps + frontend build in one pass; api/main.py serves
+    # frontend/dist from the same origin, so no second service is needed.
+    buildCommand: pip install -r requirements.txt && cd frontend && npm ci && npm run build
+    # Ingest runs before uvicorn so Chroma is populated fresh on every
+    # deploy/restart (the free tier's disk is ephemeral). It is idempotent,
+    # so a warm disk only skips already-embedded chunks.
+    startCommand: python scripts/ingest.py && uvicorn api.main:app --host 0.0.0.0 --port $PORT
+    healthCheckPath: /health
+    envVars:
+      - key: PYTHON_VERSION
+        value: 3.11.13
+      # Secrets/config are filled in on the Render dashboard (sync: false
+      # means "prompt for the value; never store it in this file").
+      - key: OPENAI_API_KEY
+        sync: false
+      - key: LANGSMITH_API_KEY
+        sync: false
+      - key: LANGSMITH_TRACING
+        sync: false
+      - key: LANGSMITH_PROJECT
+        sync: false

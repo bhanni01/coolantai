@@ -10,6 +10,10 @@ Endpoints:
                               graph.astream() yields, then a terminal
                               'complete' (or 'error') event.
 
+If frontend/dist exists (built via `npm run build` in frontend/), it is served
+as static files from the same app, so frontend and backend share one origin
+and no CORS configuration is needed.
+
 Run it with:  uvicorn api.main:app --reload   (from the repo root)
 
 The pipeline itself is untouched; this only reuses build_graph, GraphState and
@@ -20,11 +24,12 @@ inject a fake-wired graph.
 from __future__ import annotations
 
 import asyncio
+from pathlib import Path
 from uuid import uuid4
 
 from fastapi import Depends, FastAPI, HTTPException
-from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
+from fastapi.staticfiles import StaticFiles
 
 from coolant_copilot.schemas.datacenter_profile import (
     DatacenterProfile,
@@ -36,14 +41,6 @@ from .pipeline import get_graph
 from .runner import RunRegistry, RunSession, execute_run, format_sse
 
 app = FastAPI(title="Coolant Formulation Copilot API", version="0.1.0")
-
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["http://localhost:5173"],
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
 
 registry = RunRegistry()
 
@@ -86,3 +83,12 @@ async def run_events(run_id: str) -> StreamingResponse:
     return StreamingResponse(
         event_source(), media_type="text/event-stream", headers=_SSE_HEADERS
     )
+
+
+# Serve the built frontend from the same origin (single Render service, no
+# CORS). Registered after the API routes so /run, /run/{id}/events and /health
+# keep matching first; html=True makes / serve index.html. In local dev the
+# Vite dev server proxies API paths here instead, so a missing dist is fine.
+_FRONTEND_DIST = Path(__file__).resolve().parent.parent / "frontend" / "dist"
+if _FRONTEND_DIST.is_dir():
+    app.mount("/", StaticFiles(directory=_FRONTEND_DIST, html=True), name="frontend")
