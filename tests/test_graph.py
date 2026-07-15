@@ -1,6 +1,7 @@
 from conftest import FakeStructuredLLM, FakeToolCallingLLM, make_target_spec
 
 from langchain_core.documents import Document
+from langchain_core.vectorstores import VectorStore
 
 from coolant_copilot.graph import MAX_REVISIONS, build_graph, route_after_critic
 from coolant_copilot.nodes.critic import CriticDraft, ScoreDraft
@@ -54,9 +55,20 @@ class TestRouteAfterCritic:
         assert route_after_critic(state) == "generator"
 
 
-class StubVectorStore:
-    def similarity_search(self, query: str, k: int) -> list[Document]:
-        return [Document("Ester fluids reach 0.15 W/m·K.", metadata={"source": "esters.txt"})]
+class StubVectorStore(VectorStore):
+    _DOCS = [Document("Ester fluids reach 0.15 W/m·K.", metadata={"source": "esters.txt"})]
+
+    @classmethod
+    def from_texts(cls, texts, embedding, metadatas=None, **kwargs):
+        raise NotImplementedError
+
+    def similarity_search(self, query: str, k: int = 4, **kwargs) -> list[Document]:
+        return list(self._DOCS)
+
+    def max_marginal_relevance_search(
+        self, query: str, k: int = 4, fetch_k: int = 20, lambda_mult: float = 0.5, **kwargs
+    ) -> list[Document]:
+        return list(self._DOCS)
 
 
 def make_fakes(critic_verdict: str):

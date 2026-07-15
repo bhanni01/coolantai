@@ -31,7 +31,7 @@ def target_for(spec, prop: PropertyName):
 
 class TestCoolingMethod:
     def test_immersion_requires_dielectric_with_strength_target(self):
-        spec = resolve_target_spec(make_profile(cooling_method="single_phase_immersion"))
+        spec = resolve_target_spec.invoke(make_profile(cooling_method="single_phase_immersion"))
         assert spec.application == "single_phase_immersion"
         assert spec.requires_dielectric is True
         assert spec.corrosion_inhibition_required is False
@@ -42,7 +42,7 @@ class TestCoolingMethod:
 
     @pytest.mark.parametrize("method", ["direct_to_chip", "rear_door_heat_exchanger"])
     def test_water_loop_methods_need_corrosion_inhibition_not_dielectric(self, method):
-        spec = resolve_target_spec(make_profile(cooling_method=method))
+        spec = resolve_target_spec.invoke(make_profile(cooling_method=method))
         assert spec.application == "cold_plate"
         assert spec.requires_dielectric is False
         assert spec.corrosion_inhibition_required is True
@@ -55,32 +55,32 @@ class TestRackDensity:
         [("standard", 0.060), ("high_density", 0.075), ("ultra_high_density", 0.090)],
     )
     def test_thermal_conductivity_minimum(self, density, tc_min):
-        spec = resolve_target_spec(make_profile(rack_density=density))
+        spec = resolve_target_spec.invoke(make_profile(rack_density=density))
         assert target_for(spec, PropertyName.THERMAL_CONDUCTIVITY).min_value == tc_min
 
     def test_ultra_high_density_raises_flash_point_by_15(self):
-        base = resolve_target_spec(make_profile(rack_density="standard"))
-        ultra = resolve_target_spec(make_profile(rack_density="ultra_high_density"))
+        base = resolve_target_spec.invoke(make_profile(rack_density="standard"))
+        ultra = resolve_target_spec.invoke(make_profile(rack_density="ultra_high_density"))
         assert target_for(base, PropertyName.FLASH_POINT).min_value == 150
         assert target_for(ultra, PropertyName.FLASH_POINT).min_value == 165
 
 
 class TestClimateZone:
     def test_temperate_pour_point(self):
-        spec = resolve_target_spec(make_profile(climate_zone="temperate"))
+        spec = resolve_target_spec.invoke(make_profile(climate_zone="temperate"))
         assert target_for(spec, PropertyName.POUR_POINT).max_value == -20
 
     def test_cold_pour_point(self):
-        spec = resolve_target_spec(make_profile(climate_zone="cold"))
+        spec = resolve_target_spec.invoke(make_profile(climate_zone="cold"))
         assert target_for(spec, PropertyName.POUR_POINT).max_value == -40
 
     def test_hot_humid_raises_flash_point_and_sets_no_pour_point(self):
-        spec = resolve_target_spec(make_profile(climate_zone="hot_humid"))
+        spec = resolve_target_spec.invoke(make_profile(climate_zone="hot_humid"))
         assert target_for(spec, PropertyName.FLASH_POINT).min_value == 160
         assert target_for(spec, PropertyName.POUR_POINT) is None
 
     def test_flash_point_adders_stack(self):
-        spec = resolve_target_spec(
+        spec = resolve_target_spec.invoke(
             make_profile(rack_density="ultra_high_density", climate_zone="hot_humid")
         )
         assert target_for(spec, PropertyName.FLASH_POINT).min_value == 175
@@ -97,7 +97,7 @@ class TestRegulatoryRegion:
         ],
     )
     def test_maps_to_compliance_regions(self, region, expected):
-        spec = resolve_target_spec(make_profile(regulatory_region=region))
+        spec = resolve_target_spec.invoke(make_profile(regulatory_region=region))
         assert spec.regulatory_regions == expected
 
 
@@ -110,14 +110,14 @@ class TestOptimizationPriority:
 
     def test_priority_never_touches_the_spec(self):
         specs = [
-            resolve_target_spec(make_profile(optimization_priority=p))
+            resolve_target_spec.invoke(make_profile(optimization_priority=p))
             for p in ("performance", "cost", "compliance", "lifespan")
         ]
         assert all(s == specs[0] for s in specs)
 
 
 def test_resolution_is_deterministic():
-    assert resolve_target_spec(make_profile()) == resolve_target_spec(make_profile())
+    assert resolve_target_spec.invoke(make_profile()) == resolve_target_spec.invoke(make_profile())
 
 
 def test_profile_rejects_unknown_option_values_and_extra_fields():

@@ -1,9 +1,12 @@
 """Research node: ReAct-style retrieval loop, then distill a ResearchBrief.
 
-Phase 1 — gathering: the LLM drives bound tools (search_chroma,
+Phase 1 — gathering: a deterministic seed retrieval
+(RunnableParallel: context=MMR retriever, spec=passthrough) runs the
+spec-derived query first, then the LLM drives bound tools (search_chroma,
 get_extracted_fluid_profile), capped at MAX_TOOL_CALLS executed calls. Every
-chunk a search returns is accumulated in code; the LLM chooses queries but
-cannot invent chunks.
+chunk a search returns is accumulated in code; the LLM chooses follow-up
+queries but cannot invent chunks. All retrieval goes through the MMR
+retriever, optionally gated by a similarity-score threshold.
 
 Phase 2 — distillation: the gathered chunks go through the token-budget
 selector and one structured call fills BriefDraft. Findings reference chunks
@@ -17,6 +20,7 @@ from typing import Callable
 
 from langchain_core.documents import Document
 from langchain_core.language_models.chat_models import BaseChatModel
+from langchain_core.runnables import RunnableParallel, RunnablePassthrough
 from langchain_core.tools import tool
 from langchain_core.vectorstores import VectorStore
 from langchain_openai import ChatOpenAI
@@ -31,11 +35,14 @@ from coolant_copilot.prompting import (
 )
 from coolant_copilot.schemas.extraction import ExtractedFluidProfile
 from coolant_copilot.state import GraphState, ResearchBrief, ResearchFinding, TargetSpec
+from coolant_copilot.streaming import emit_detail
 
 logger = logging.getLogger(__name__)
 
 RESEARCH_MODEL = "gpt-4o-mini"  # cheap extraction tier
-K_PER_SEARCH = 4
+# search_chroma retrieves via MMR: k diverse chunks re-ranked out of fetch_k
+# nearest neighbors (lambda_mult balances relevance vs diversity).
+MMR_SEARCH_KWARGS = {"k": 8, "fetch_k": 20, "lambda_mult": 0.5}
 MAX_TOOL_CALLS = 3
 # Retrieved context is capped by tokens, not just count: take gathered chunks
 # in retrieval order but stop adding once the cumulative context reaches this.
@@ -125,18 +132,58 @@ def research(
     vectorstore: VectorStore,
     llm: BaseChatModel | None = None,
     profiles: list[ExtractedFluidProfile] | None = None,
+    score_threshold: float | None = None,
 ) -> ResearchBrief:
-    """ReAct gathering loop over the vectorstore, then one structured brief."""
+    """ReAct gathering loop over the vectorstore, then one structured brief.
+
+    Retrieval goes through an MMR retriever (MMR_SEARCH_KWARGS). When
+    score_threshold is set, each query is first gated by a
+    similarity_score_threshold retriever: a query with no chunk scoring above
+    the threshold returns an explicit "no relevant sources found above
+    threshold" result instead of low-relevance chunks — distinct from the
+    empty-collection fallback.
+    """
     profiles = profiles or []
     gathered: list[Document] = []
     seen: set[tuple] = set()
     profile_notes: list[str] = []
+    below_threshold_queries: list[str] = []
 
-    @tool
-    def search_chroma(query: str) -> str:
-        """Search the ingested coolant literature. Returns matching chunks;
-        chunks already returned by earlier searches are not repeated."""
-        chunks = vectorstore.similarity_search(query, k=K_PER_SEARCH)
+    retriever = vectorstore.as_retriever(
+        search_type="mmr", search_kwargs=dict(MMR_SEARCH_KWARGS)
+    )
+    threshold_gate = (
+        vectorstore.as_retriever(
+            search_type="similarity_score_threshold",
+            search_kwargs={"k": 1, "score_threshold": score_threshold},
+        )
+        if score_threshold is not None
+        else None
+    )
+
+    def _passes_threshold(query: str) -> bool:
+        if threshold_gate is None:
+            return True
+        if threshold_gate.invoke(query):
+            return True
+        below_threshold_queries.append(query)
+        return False
+
+    def _relevance_scores(query: str) -> dict[str, float]:
+        """Relevance scores for the source_retrieved detail events. MMR search
+        returns no scores, so the same query's nearest neighbors are scored
+        separately; MMR picks outside fetch_k simply map to no score."""
+        try:
+            scored = vectorstore.similarity_search_with_relevance_scores(
+                query, k=MMR_SEARCH_KWARGS["fetch_k"]
+            )
+        except Exception:  # stores without score support still retrieve fine
+            return {}
+        return {doc.page_content: score for doc, score in scored}
+
+    def _gather(chunks: list[Document], scores: dict[str, float] | None = None) -> list[str]:
+        """Deduplicate into `gathered`; return the formatted new blocks."""
+        scores = scores or {}
         new_blocks: list[str] = []
         for chunk in chunks:
             key = (chunk.metadata.get("source"), chunk.metadata.get("page"), chunk.page_content)
@@ -145,6 +192,27 @@ def research(
             seen.add(key)
             gathered.append(chunk)
             new_blocks.append(_chunk_block(len(gathered) - 1, chunk))
+            score = scores.get(chunk.page_content)
+            emit_detail(
+                "research",
+                "source_retrieved",
+                {
+                    "source_document": chunk.metadata.get("source", "unknown"),
+                    "similarity_score": round(score, 4) if score is not None else None,
+                },
+            )
+        return new_blocks
+
+    @tool
+    def search_chroma(query: str) -> str:
+        """Search the ingested coolant literature. Returns matching chunks;
+        chunks already returned by earlier searches are not repeated."""
+        if not _passes_threshold(query):
+            return (
+                "No relevant sources found above threshold "
+                f"(score_threshold={score_threshold}) for this query."
+            )
+        new_blocks = _gather(retriever.invoke(query), _relevance_scores(query))
         if not new_blocks:
             return "No new results for this query."
         return wrap_reference_material("\n\n".join(new_blocks))
@@ -163,10 +231,32 @@ def research(
         return wrap_reference_material(note)
 
     model = llm or ChatOpenAI(model=RESEARCH_MODEL, temperature=0)
-    user_prompt = (
-        f"TARGET SPEC\n{format_spec(spec)}\n\n"
-        f"A reasonable first query would be: {build_query(spec)}"
-    )
+
+    # Deterministic seed retrieval, structured as a parallel runnable so it
+    # shows up as one named step (retriever + passthrough) in traces. The
+    # tool loop then spends its budget on complementary angles.
+    seed_query = build_query(spec)
+    seed_blocks: list[str] = []
+    if _passes_threshold(seed_query):
+        seed = RunnableParallel(
+            {"context": retriever, "spec": RunnablePassthrough()}
+        ).invoke(seed_query)
+        seed_blocks = _gather(seed["context"], _relevance_scores(seed_query))
+
+    if seed_blocks:
+        seed_material = wrap_reference_material("\n\n".join(seed_blocks))
+        user_prompt = (
+            f"TARGET SPEC\n{format_spec(spec)}\n\n"
+            f"The seed query has already been run: {seed_query}\n"
+            f"Its results:\n{seed_material}\n\n"
+            "Spend your tool budget on complementary angles, not on rephrasing "
+            "the seed query."
+        )
+    else:
+        user_prompt = (
+            f"TARGET SPEC\n{format_spec(spec)}\n\n"
+            f"A reasonable first query would be: {seed_query}"
+        )
     _, executed = run_tool_loop(
         model,
         [search_chroma, get_extracted_fluid_profile],
@@ -177,6 +267,23 @@ def research(
     logger.info("research loop: %d tool call(s), %d chunk(s) gathered", executed, len(gathered))
 
     if not gathered:
+        if below_threshold_queries:
+            # Sources exist but nothing cleared the similarity gate — a
+            # different situation from an empty/unhelpful collection.
+            emit_detail(
+                "research", "source_retrieved", {"no_sources_above_threshold": True}
+            )
+            return ResearchBrief(
+                overview=(
+                    "No relevant sources found above threshold "
+                    f"(score_threshold={score_threshold}) for any query."
+                ),
+                findings=[],
+                gaps=[
+                    "Every retrieval query scored below the similarity threshold; "
+                    "lower the threshold or ingest sources closer to this spec."
+                ],
+            )
         return ResearchBrief(
             overview="No relevant sources found in the literature database.",
             findings=[],
@@ -232,11 +339,18 @@ def make_research_node(
     vectorstore: VectorStore,
     llm: BaseChatModel | None = None,
     profiles: list[ExtractedFluidProfile] | None = None,
+    score_threshold: float | None = None,
 ) -> Callable[[GraphState], dict]:
     """Adapt research() to the graph contract; findings are the inter-node channel."""
 
     def research_node(state: GraphState) -> dict:
-        brief = research(state.target_spec, vectorstore, llm=llm, profiles=profiles)
+        brief = research(
+            state.target_spec,
+            vectorstore,
+            llm=llm,
+            profiles=profiles,
+            score_threshold=score_threshold,
+        )
         return {"research_findings": brief.findings}
 
     return research_node

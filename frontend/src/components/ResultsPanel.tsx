@@ -1,5 +1,5 @@
 import { Panel } from './Panel'
-import type { CandidateResult, RunResult, Verdict } from '../lib/types'
+import type { CandidateResult, CrossCheck, RunResult, Verdict } from '../lib/types'
 
 const VERDICT_STYLE: Record<Verdict, string> = {
   accept: 'border-teal/40 text-teal',
@@ -7,7 +7,20 @@ const VERDICT_STYLE: Record<Verdict, string> = {
   reject: 'border-red/40 text-red',
 }
 
-export function ResultsPanel({ result }: { result: RunResult | null }) {
+function fmtNum(v: number): string {
+  if (!Number.isFinite(v)) return String(v)
+  if (Math.abs(v) >= 100) return String(Math.round(v))
+  if (Number.isInteger(v)) return String(v)
+  return String(parseFloat(v.toFixed(3)))
+}
+
+interface ResultsPanelProps {
+  result: RunResult | null
+  /** Live cross-check detail events, keyed by candidate id. */
+  crossChecks: Record<string, CrossCheck[]>
+}
+
+export function ResultsPanel({ result, crossChecks }: ResultsPanelProps) {
   return (
     <Panel
       title="Results"
@@ -31,7 +44,12 @@ export function ResultsPanel({ result }: { result: RunResult | null }) {
           {/* Ranked candidates */}
           <div className="space-y-2.5">
             {result.candidates.map((c, i) => (
-              <CandidateCard key={c.id} candidate={c} rank={i + 1} />
+              <CandidateCard
+                key={c.id}
+                candidate={c}
+                rank={i + 1}
+                checks={crossChecks[c.id] ?? []}
+              />
             ))}
           </div>
 
@@ -69,7 +87,15 @@ export function ResultsPanel({ result }: { result: RunResult | null }) {
   )
 }
 
-function CandidateCard({ candidate, rank }: { candidate: CandidateResult; rank: number }) {
+function CandidateCard({
+  candidate,
+  rank,
+  checks,
+}: {
+  candidate: CandidateResult
+  rank: number
+  checks: CrossCheck[]
+}) {
   const { compliance } = candidate
   return (
     <div className="anim-rise-in rounded-lg border border-hairline bg-surface-raised/50 p-3.5">
@@ -82,6 +108,7 @@ function CandidateCard({ candidate, rank }: { candidate: CandidateResult; rank: 
           <div className="font-mono text-[10px] text-ink-faint">{candidate.id}</div>
         </div>
         <div className="ml-auto flex items-center gap-2">
+          <ValidationBadge checks={checks} />
           <span className={`rounded border px-1.5 py-px font-mono text-[10px] uppercase ${VERDICT_STYLE[candidate.verdict]}`}>
             {candidate.verdict}
           </span>
@@ -112,7 +139,61 @@ function CandidateCard({ candidate, rank }: { candidate: CandidateResult; rank: 
         {compliance.needs_review > 0 && <span className="text-amber">{compliance.needs_review} review</span>}
         <span className={compliance.fail > 0 ? 'text-red' : 'text-ink-faint'}>{compliance.fail} fail</span>
       </div>
+
+      {/* cross-check against extracted reference profiles */}
+      {checks.length > 0 && (
+        <div className="mt-2.5 border-t border-hairline/60 pt-2.5">
+          <div className="mb-1.5 font-mono text-[10px] uppercase tracking-wider text-ink-faint">
+            reference cross-check
+          </div>
+          <div className="space-y-1">
+            {checks.map((c, i) => {
+              const conflict = c.status === 'conflict'
+              return (
+                <div
+                  key={`${c.property}-${i}`}
+                  className="flex items-center gap-2 font-mono text-[10px]"
+                  title={`${c.status} vs ${c.referenceSource}`}
+                >
+                  <span
+                    className={`h-1.5 w-1.5 shrink-0 rounded-full ${conflict ? 'bg-amber' : 'bg-teal'}`}
+                  />
+                  <span className="truncate text-ink-muted">{c.property}</span>
+                  <span className="ml-auto shrink-0 tabular-nums text-ink">
+                    {fmtNum(c.estimate)}
+                  </span>
+                  <span className="shrink-0 text-ink-faint">vs</span>
+                  <span className="shrink-0 tabular-nums text-ink-muted">
+                    {fmtNum(c.referenceValue)}
+                    {c.unit ? ` ${c.unit}` : ''}
+                  </span>
+                  <span className={`shrink-0 uppercase ${conflict ? 'text-amber' : 'text-teal'}`}>
+                    {conflict ? 'conflict' : 'ok'}
+                  </span>
+                </div>
+              )
+            })}
+          </div>
+        </div>
+      )}
     </div>
+  )
+}
+
+function ValidationBadge({ checks }: { checks: CrossCheck[] }) {
+  if (checks.length === 0) return null
+  const conflicts = checks.filter((c) => c.status === 'conflict').length
+  const validated = checks.length - conflicts
+  const hasConflict = conflicts > 0
+  return (
+    <span
+      className={`rounded border px-1.5 py-px font-mono text-[10px] ${
+        hasConflict ? 'border-amber/50 text-amber' : 'border-teal/40 text-teal'
+      }`}
+      title={`${validated} validated · ${conflicts} conflict against reference profiles`}
+    >
+      {hasConflict ? `⚠ ${conflicts}` : `✓ ${validated}`}
+    </span>
   )
 }
 

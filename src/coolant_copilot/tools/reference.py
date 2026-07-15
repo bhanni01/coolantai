@@ -7,8 +7,11 @@ Within tolerance → "validated", outside → "conflict", no reference data →
 untouched.
 """
 
+from langchain_core.runnables import chain
+
 from coolant_copilot.schemas.extraction import BaseChemistry, ExtractedFluidProfile
 from coolant_copilot.state import Candidate, PropertyEstimate, PropertyName
+from coolant_copilot.streaming import emit_detail
 
 # First match wins, so more specific patterns come before generic ones.
 CHEMISTRY_PATTERNS: list[tuple[BaseChemistry, tuple[str, ...]]] = [
@@ -80,12 +83,18 @@ def get_reference_fluid_properties(
     ]
 
 
-def cross_check_estimates(
-    candidate: Candidate,
-    estimates: list[PropertyEstimate],
-    profiles: list[ExtractedFluidProfile],
-) -> list[PropertyEstimate]:
-    """Annotate estimates with validated/conflict against same-chemistry references."""
+@chain
+def cross_check_estimates(inputs: dict) -> list[PropertyEstimate]:
+    """Annotate estimates with validated/conflict against same-chemistry references.
+
+    @chain makes this a Runnable so each cross-check appears as a named step
+    in LangSmith traces. Call it with
+    .invoke({"candidate": ..., "estimates": ..., "profiles": ...}).
+    """
+    candidate: Candidate = inputs["candidate"]
+    estimates: list[PropertyEstimate] = inputs["estimates"]
+    profiles: list[ExtractedFluidProfile] = inputs["profiles"]
+
     base = next(c for c in candidate.components if c.role == "base_fluid")
     chemistry = classify_base_chemistry(base.name)
     if chemistry is BaseChemistry.OTHER:
@@ -110,6 +119,19 @@ def cross_check_estimates(
             status, verb = "validated", "consistent with"
         else:
             status, verb = "conflict", "conflicts with"
+        emit_detail(
+            "property_estimator",
+            "cross_check",
+            {
+                "candidate_id": est.candidate_id,
+                "property": est.property.value,
+                "estimate": est.value,
+                "unit": est.unit,
+                "reference_value": ref.value,
+                "reference_source": profile.source_document,
+                "status": status,
+            },
+        )
         note = (
             f"Estimate {est.value:g} {est.unit} {verb} {ref.value:g} {ref.unit} "
             f"reported for {profile.fluid_name} ({chemistry.value}, "

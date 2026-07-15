@@ -71,6 +71,30 @@ def test_exclusion_screening_always_runs_in_code():
     assert excluded[0].component_name == "BHT"
 
 
+def test_each_candidate_gets_its_own_batched_tool_loop():
+    # Two new candidates → one tool-loop conversation each (single batch()
+    # call); the empty fake forces the code fallback for both.
+    llm = FakeToolCallingLLM()
+    state = GraphState(
+        target_spec=make_target_spec(),
+        candidates=[make_candidate("cand-0-rev0"), make_candidate("cand-1-rev0")],
+    )
+
+    update = make_compliance_checker_node(llm)(state)
+
+    assert {f.candidate_id for f in update["compliance_flags"]} == {
+        "cand-0-rev0",
+        "cand-1-rev0",
+    }
+    assert llm.tool_invokes == 2
+    prompts = [
+        next(m.content for m in messages if m.type == "human")
+        for messages in llm.message_log
+    ]
+    assert sum("cand-0-rev0" in p for p in prompts) == 1
+    assert sum("cand-1-rev0" in p for p in prompts) == 1
+
+
 def test_no_new_candidates_is_a_noop():
     llm = FakeToolCallingLLM()
     assert make_compliance_checker_node(llm)(GraphState(target_spec=make_target_spec())) == {}

@@ -1,3 +1,5 @@
+import threading
+
 from langchain_core.messages import AIMessage
 
 from coolant_copilot.state import (
@@ -20,7 +22,9 @@ class FakeToolCallingLLM:
 
     tool_messages are returned one per bound-model invoke; when exhausted, an
     AIMessage with no tool calls ends the loop. structured_responses behave
-    like FakeStructuredLLM (last one repeats).
+    like FakeStructuredLLM (last one repeats). Thread-safe: the evaluator
+    nodes fan per-candidate tool loops out with .batch(), which runs them on
+    executor threads sharing one fake.
     """
 
     def __init__(self, tool_messages=None, structured_responses=None):
@@ -31,17 +35,20 @@ class FakeToolCallingLLM:
         self.message_log: list = []
         self.tool_invokes = 0
         self.structured_invokes = 0
+        self._lock = threading.Lock()
 
     def bind_tools(self, tools):
-        self.bound_tools.append(list(tools))
+        with self._lock:
+            self.bound_tools.append(list(tools))
         parent = self
 
         class _Bound:
             def invoke(self, messages):
-                parent.tool_invokes += 1
-                parent.message_log.append(messages)
-                if parent.tool_messages:
-                    return parent.tool_messages.pop(0)
+                with parent._lock:
+                    parent.tool_invokes += 1
+                    parent.message_log.append(messages)
+                    if parent.tool_messages:
+                        return parent.tool_messages.pop(0)
                 return AIMessage(content="done")
 
         return _Bound()

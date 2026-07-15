@@ -57,9 +57,18 @@ def build_graph(
     critic_llm: BaseChatModel | None = None,
     planner_llm: BaseChatModel | None = None,
     reference_profiles: list[ExtractedFluidProfile] | None = None,
+    research_score_threshold: float | None = None,
 ):
     graph = StateGraph(GraphState)
-    graph.add_node("research", make_research_node(vectorstore, research_llm, reference_profiles))
+    graph.add_node(
+        "research",
+        make_research_node(
+            vectorstore,
+            research_llm,
+            reference_profiles,
+            score_threshold=research_score_threshold,
+        ),
+    )
     graph.add_node("generator", make_generator_node(generator_llm))
     graph.add_node(
         "property_estimator", make_property_estimator_node(reference_profiles, estimator_llm)

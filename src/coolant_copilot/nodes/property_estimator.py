@@ -6,8 +6,13 @@ in the trace — but the numbers never pass through the LLM: each tool call
 executes the deterministic function and captures its typed output straight
 into the node's result. The LLM's text is orchestration commentary only.
 
-Any new candidate the LLM fails to request is estimated directly in code, so
-state completeness never depends on LLM cooperation. Writes only the
+Each candidate gets its own short tool-loop conversation, and the node fans
+them out with a single RunnableLambda.batch() call, so multi-candidate
+evaluation runs concurrently (wall-clock ≈ the slowest candidate, not the
+sum) and shows up in LangSmith as parallel estimate_candidate children.
+
+Any candidate whose loop never requests estimation is estimated directly in
+code, so state completeness never depends on LLM cooperation. Writes only the
 property_estimates channel (disjoint from compliance_checker's) so the
 parallel join needs no reducer.
 """
@@ -17,6 +22,7 @@ import logging
 from typing import Callable
 
 from langchain_core.language_models.chat_models import BaseChatModel
+from langchain_core.runnables import RunnableLambda
 from langchain_core.tools import tool
 from langchain_openai import ChatOpenAI
 
@@ -34,7 +40,7 @@ from coolant_copilot.tools.reference import (
 logger = logging.getLogger(__name__)
 
 ESTIMATOR_MODEL = "gpt-4o-mini"  # tool orchestration, not open-ended reasoning
-# Estimate per candidate + a few reference lookups.
+# Estimate per candidate + a reference lookup, with one call of slack.
 TOOL_BUDGET_PER_CANDIDATE = 2
 
 SYSTEM_PROMPT = """\
@@ -68,7 +74,9 @@ def _estimate_and_check(
 ) -> list[PropertyEstimate]:
     estimates = run_estimation(candidate, state.target_spec.property_targets)
     if profiles:
-        estimates = cross_check_estimates(candidate, estimates, profiles)
+        estimates = cross_check_estimates.invoke(
+            {"candidate": candidate, "estimates": estimates, "profiles": profiles}
+        )
     return estimates
 
 
@@ -84,54 +92,57 @@ def make_property_estimator_node(
         if not new:
             return {}
 
-        by_id = {c.id: c for c in new}
-        captured: dict[str, list[PropertyEstimate]] = {}
-
-        @tool
-        def estimate_properties(candidate_id: str) -> str:
-            """Run deterministic property estimation (mixing rules + literature
-            tables) for one candidate. Returns the estimates as JSON."""
-            candidate = by_id.get(candidate_id)
-            if candidate is None:
-                return f"Unknown candidate_id '{candidate_id}'. Valid ids: {sorted(by_id)}"
-            captured[candidate_id] = _estimate_and_check(candidate, state, profiles)
-            return _estimates_summary(captured[candidate_id])
-
-        @tool
-        def get_reference_fluid_properties(base_chemistry: str) -> str:
-            """Look up real measured properties of extracted commercial reference
-            fluids for a chemistry class (synthetic_ester, polyalphaolefin,
-            mineral_oil, glycol_water, silicone, fluorocarbon)."""
-            return json.dumps(lookup_references(base_chemistry, profiles))
-
-        candidate_lines = "\n".join(
-            f"- {c.id}: base fluid {next(x.name for x in c.components if x.role == 'base_fluid')} "
-            f"({classify_base_chemistry(next(x.name for x in c.components if x.role == 'base_fluid')).value})"
-            for c in new
-        )
-        user_prompt = (
-            "Estimate properties for these candidates:\n"
-            + wrap_reference_material(candidate_lines)
-        )
-
         model = llm or ChatOpenAI(model=ESTIMATOR_MODEL, temperature=0)
-        run_tool_loop(
-            model,
-            [estimate_properties, get_reference_fluid_properties],
-            SYSTEM_PROMPT,
-            user_prompt,
-            max_tool_calls=TOOL_BUDGET_PER_CANDIDATE * len(new) + 2,
-        )
 
-        # Deterministic guarantee: cover anything the LLM skipped.
-        for candidate in new:
+        def estimate_candidate(candidate: Candidate) -> list[PropertyEstimate]:
+            captured: dict[str, list[PropertyEstimate]] = {}
+
+            @tool
+            def estimate_properties(candidate_id: str) -> str:
+                """Run deterministic property estimation (mixing rules + literature
+                tables) for one candidate. Returns the estimates as JSON."""
+                if candidate_id != candidate.id:
+                    return f"Unknown candidate_id '{candidate_id}'. Valid ids: ['{candidate.id}']"
+                captured[candidate.id] = _estimate_and_check(candidate, state, profiles)
+                return _estimates_summary(captured[candidate.id])
+
+            @tool
+            def get_reference_fluid_properties(base_chemistry: str) -> str:
+                """Look up real measured properties of extracted commercial reference
+                fluids for a chemistry class (synthetic_ester, polyalphaolefin,
+                mineral_oil, glycol_water, silicone, fluorocarbon)."""
+                return json.dumps(lookup_references(base_chemistry, profiles))
+
+            base = next(x.name for x in candidate.components if x.role == "base_fluid")
+            candidate_line = (
+                f"- {candidate.id}: base fluid {base} "
+                f"({classify_base_chemistry(base).value})"
+            )
+            user_prompt = (
+                "Estimate properties for this candidate:\n"
+                + wrap_reference_material(candidate_line)
+            )
+            run_tool_loop(
+                model,
+                [estimate_properties, get_reference_fluid_properties],
+                SYSTEM_PROMPT,
+                user_prompt,
+                max_tool_calls=TOOL_BUDGET_PER_CANDIDATE + 1,
+            )
+
+            # Deterministic guarantee: cover a candidate the LLM skipped.
             if candidate.id not in captured:
                 logger.warning("LLM never estimated %s; running directly", candidate.id)
                 captured[candidate.id] = _estimate_and_check(candidate, state, profiles)
+            return captured[candidate.id]
+
+        # One batch() call fans the per-candidate loops out onto executor
+        # threads (visible as concurrent estimate_candidate runs in traces).
+        results = RunnableLambda(estimate_candidate).batch(new)
 
         return {
             "property_estimates": state.property_estimates
-            + [e for c in new for e in captured[c.id]]
+            + [e for per_candidate in results for e in per_candidate]
         }
 
     return property_estimator

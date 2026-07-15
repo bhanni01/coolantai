@@ -3,6 +3,7 @@ import { eventsUrl, mapCompleteResult, postRun } from '../lib/api'
 import type { RawCompleteResult } from '../lib/api'
 import type { DatacenterProfile } from '../lib/profile'
 import type {
+  CrossCheck,
   LogEntry,
   LogLevel,
   NodeName,
@@ -10,6 +11,7 @@ import type {
   NodeStateMap,
   RunController,
   RunResult,
+  SourceChip,
 } from '../lib/types'
 
 const ALL_NODES: NodeName[] = [
@@ -36,6 +38,16 @@ interface NodeEvent {
   node_name: NodeName
   status: 'active' | 'completed'
   output_summary: string
+  timestamp: string
+  loop_iteration: number
+}
+
+// Backend detail event shape (api/runner.py, custom stream). Additive alongside
+// the node status events; arrives between a node's 'active' and 'completed'.
+interface DetailEvent {
+  node_name: NodeName
+  detail_type: 'source_retrieved' | 'cross_check'
+  payload: Record<string, unknown>
   timestamp: string
   loop_iteration: number
 }
@@ -76,6 +88,9 @@ export function useLiveRun(): RunController {
   const [loop, setLoop] = useState(0)
   const [result, setResult] = useState<RunResult | null>(null)
   const [error, setError] = useState<string | null>(null)
+  const [sources, setSources] = useState<SourceChip[]>([])
+  const [noSourcesAboveThreshold, setNoSources] = useState(false)
+  const [crossChecks, setCrossChecks] = useState<Record<string, CrossCheck[]>>({})
 
   const runIdRef = useRef(0) // bumps on every start/reset to invalidate stale async
   const logIdRef = useRef(0)
@@ -130,6 +145,9 @@ export function useLiveRun(): RunController {
     setLoopValue(0)
     setResult(null)
     setError(null)
+    setSources([])
+    setNoSources(false)
+    setCrossChecks({})
     appendLog({
       node: 'system',
       message: `Run started — ${profile.cooling_method} · ${profile.rack_density} · ${profile.climate_zone} · ${profile.regulatory_region} · optimize ${profile.optimization_priority}`,
@@ -177,6 +195,45 @@ export function useLiveRun(): RunController {
           }
         })
 
+        // Fine-grained detail events, additive to the node status events. They
+        // arrive while their parent node is still 'active', so they never touch
+        // node/loop/phase state — only the dedicated detail channels.
+        es.addEventListener('detail', (e) => {
+          if (!live()) return
+          armStall()
+          const ev = JSON.parse((e as MessageEvent).data) as DetailEvent
+          const p = ev.payload
+          if (ev.detail_type === 'source_retrieved') {
+            if (p.no_sources_above_threshold === true) {
+              setNoSources(true)
+              return
+            }
+            setSources((prev) => [
+              ...prev,
+              {
+                sourceDocument: String(p.source_document ?? 'unknown'),
+                similarityScore:
+                  typeof p.similarity_score === 'number' ? p.similarity_score : null,
+              },
+            ])
+          } else if (ev.detail_type === 'cross_check') {
+            const candidateId = String(p.candidate_id ?? '')
+            const check: CrossCheck = {
+              candidateId,
+              property: String(p.property ?? ''),
+              estimate: Number(p.estimate),
+              unit: String(p.unit ?? ''),
+              referenceValue: Number(p.reference_value),
+              referenceSource: String(p.reference_source ?? ''),
+              status: p.status === 'conflict' ? 'conflict' : 'validated',
+            }
+            setCrossChecks((prev) => ({
+              ...prev,
+              [candidateId]: [...(prev[candidateId] ?? []), check],
+            }))
+          }
+        })
+
         es.addEventListener('complete', (e) => {
           if (!live() || terminatedRef.current) return
           terminatedRef.current = true
@@ -221,6 +278,9 @@ export function useLiveRun(): RunController {
     setLoopValue(0)
     setResult(null)
     setError(null)
+    setSources([])
+    setNoSources(false)
+    setCrossChecks({})
   }, [teardown, setLoopValue])
 
   useEffect(() => () => {
@@ -228,5 +288,17 @@ export function useLiveRun(): RunController {
     teardown()
   }, [teardown])
 
-  return { phase, nodes, logs, loop, result, error, start, reset }
+  return {
+    phase,
+    nodes,
+    logs,
+    loop,
+    result,
+    error,
+    sources,
+    noSourcesAboveThreshold,
+    crossChecks,
+    start,
+    reset,
+  }
 }

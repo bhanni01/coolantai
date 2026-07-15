@@ -1,4 +1,4 @@
-import type { LogLevel, NodeName, RunResult, Verdict } from './types'
+import type { CrossCheck, LogLevel, NodeName, RunResult, SourceChip, Verdict } from './types'
 
 // One step of the scripted run. A step activates one or more nodes, holds them
 // "active" for durationMs, then marks them done and emits the log lines.
@@ -11,6 +11,11 @@ export interface Beat {
   badges?: Partial<
     Record<NodeName, { text: string; tone: 'teal' | 'copper' | 'amber' | 'red' }>
   >
+  // Detail signals mirroring the live `detail` SSE events: source chunks the
+  // research beat retrieves (staggered across its active window) and property
+  // cross-checks a property_estimator beat emits.
+  sources?: SourceChip[]
+  crossChecks?: CrossCheck[]
 }
 
 // A representative run mirroring an actual pipeline execution: an initial pass
@@ -22,6 +27,12 @@ export const TIMELINE: Beat[] = [
     loop: 0,
     durationMs: 1100,
     logs: [{ node: 'research', message: 'Retrieved 3 findings from Chroma (2 sources cited)', level: 'info' }],
+    sources: [
+      { sourceDocument: 'shell-s5-x-datasheet.pdf', similarityScore: 0.82 },
+      { sourceDocument: 'pao-coolant-review-2023.pdf', similarityScore: 0.77 },
+      { sourceDocument: 'pfas-free-dielectric-survey.pdf', similarityScore: 0.71 },
+      { sourceDocument: 'ester-thermal-stability.pdf', similarityScore: 0.64 },
+    ],
   },
   {
     activate: ['generator'],
@@ -63,6 +74,26 @@ export const TIMELINE: Beat[] = [
       { node: 'property_estimator', message: '16 property estimates (cross-checked vs Shell S5 X)', level: 'info' },
       { node: 'compliance_checker', message: '34 compliance flags — 3 needs_review', level: 'warn' },
     ],
+    crossChecks: [
+      {
+        candidateId: 'cand-3-rev1',
+        property: 'thermal_conductivity',
+        estimate: 0.15,
+        unit: 'W/m·K',
+        referenceValue: 0.144,
+        referenceSource: 'shell-s5-x-datasheet.pdf',
+        status: 'validated',
+      },
+      {
+        candidateId: 'cand-3-rev1',
+        property: 'flash_point',
+        estimate: 310,
+        unit: '°C',
+        referenceValue: 268,
+        referenceSource: 'shell-s5-x-datasheet.pdf',
+        status: 'conflict',
+      },
+    ],
   },
   {
     activate: ['critic'],
@@ -88,6 +119,26 @@ export const TIMELINE: Beat[] = [
       { node: 'property_estimator', message: '24 property estimates computed', level: 'info' },
       { node: 'compliance_checker', message: '49 compliance flags — 1 fail, 4 needs_review', level: 'error' },
     ],
+    crossChecks: [
+      {
+        candidateId: 'cand-6-rev2',
+        property: 'thermal_conductivity',
+        estimate: 0.148,
+        unit: 'W/m·K',
+        referenceValue: 0.151,
+        referenceSource: 'pao-coolant-review-2023.pdf',
+        status: 'validated',
+      },
+      {
+        candidateId: 'cand-6-rev2',
+        property: 'kinematic_viscosity',
+        estimate: 52,
+        unit: 'cSt',
+        referenceValue: 31,
+        referenceSource: 'pao-coolant-review-2023.pdf',
+        status: 'conflict',
+      },
+    ],
   },
   {
     activate: ['critic'],
@@ -112,6 +163,26 @@ export const TIMELINE: Beat[] = [
     logs: [
       { node: 'property_estimator', message: '24 property estimates computed', level: 'info' },
       { node: 'compliance_checker', message: '70 compliance flags — 0 fail', level: 'info' },
+    ],
+    crossChecks: [
+      {
+        candidateId: 'cand-9-rev3',
+        property: 'thermal_conductivity',
+        estimate: 0.141,
+        unit: 'W/m·K',
+        referenceValue: 0.138,
+        referenceSource: 'ester-thermal-stability.pdf',
+        status: 'validated',
+      },
+      {
+        candidateId: 'cand-9-rev3',
+        property: 'flash_point',
+        estimate: 260,
+        unit: '°C',
+        referenceValue: 254,
+        referenceSource: 'ester-thermal-stability.pdf',
+        status: 'validated',
+      },
     ],
   },
   {

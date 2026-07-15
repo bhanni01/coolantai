@@ -9,6 +9,11 @@ Event payloads reuse the pipeline's own schemas — node updates carry the live
 GraphState channels, and the complete event embeds the full GraphState dump
 (GraphState.model_dump) plus the observability token/cost breakdown. Nothing
 is redefined here.
+
+Alongside the per-node status events, `detail` events carry fine-grained
+signals emitted mid-node through streaming.emit_detail (one per retrieved
+source chunk, one per cross-checked property estimate); they arrive between
+their parent node's 'active' and 'completed' events.
 """
 
 from __future__ import annotations
@@ -163,8 +168,11 @@ async def execute_run(
     try:
         # Combined modes: the "debug" stream emits a `task` event when each node
         # *starts* (so the two fan-out evaluators announce themselves in the same
-        # superstep — genuine concurrency, not inferred), and the "updates"
-        # stream carries each node's result dict when it *completes*.
+        # superstep — genuine concurrency, not inferred), the "updates" stream
+        # carries each node's result dict when it *completes*, and the "custom"
+        # stream carries fine-grained detail chunks written mid-node via
+        # streaming.emit_detail (per retrieved source, per cross-checked
+        # property) — additive alongside the node status events.
         async for mode, chunk in graph.astream(
             initial,
             config={
@@ -173,13 +181,27 @@ async def execute_run(
                 "callbacks": [tracker],
                 "tags": ["coolant-copilot", "api"],
             },
-            stream_mode=["updates", "debug"],
+            stream_mode=["updates", "debug", "custom"],
         ):
             if mode == "debug":
                 if chunk.get("type") == "task":
                     node = chunk.get("payload", {}).get("name", "")
                     if node and not node.startswith("__"):
                         session.emit(node_event(node, "active", ""))
+                continue
+
+            if mode == "custom":
+                if isinstance(chunk, dict) and chunk.get("detail_type"):
+                    session.emit(
+                        {
+                            "type": "detail",
+                            "node_name": chunk.get("node_name", ""),
+                            "detail_type": chunk["detail_type"],
+                            "payload": chunk.get("payload", {}),
+                            "timestamp": _now(),
+                            "loop_iteration": int(values.get("revision_count", 0)),
+                        }
+                    )
                 continue
 
             # mode == "updates"

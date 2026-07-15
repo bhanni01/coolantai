@@ -47,6 +47,25 @@ export interface PropertyEstimate {
   meets: boolean | null
 }
 
+export type CrossCheckStatus = 'validated' | 'conflict'
+
+/** One `source_retrieved` detail event (api/runner.py → research node). */
+export interface SourceChip {
+  sourceDocument: string
+  similarityScore: number | null
+}
+
+/** One `cross_check` detail event (property_estimator → cross_check_estimates). */
+export interface CrossCheck {
+  candidateId: string
+  property: string
+  estimate: number
+  unit: string
+  referenceValue: number
+  referenceSource: string
+  status: CrossCheckStatus
+}
+
 export interface CandidateResult {
   id: string
   name: string
@@ -99,6 +118,12 @@ export interface RunController {
   loop: number
   result: RunResult | null
   error: string | null
+  /** Live source chunks retrieved by the research node, in arrival order. */
+  sources: SourceChip[]
+  /** True when research reported that nothing cleared the similarity threshold. */
+  noSourcesAboveThreshold: boolean
+  /** Live property cross-checks emitted by property_estimator, keyed by candidate id. */
+  crossChecks: Record<string, CrossCheck[]>
   start: (profile: DatacenterProfile) => void
   reset: () => void
 }

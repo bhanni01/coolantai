@@ -83,6 +83,32 @@ def test_fallback_covers_candidates_the_llm_skipped():
     assert {e.candidate_id for e in update["property_estimates"]} == {"cand-0-rev0"}
 
 
+def test_each_candidate_gets_its_own_batched_tool_loop():
+    # Two new candidates → the node fans out one tool-loop conversation per
+    # candidate via a single batch() call; the empty fake never calls tools,
+    # so the deterministic fallback must still cover both.
+    llm = FakeToolCallingLLM()
+    state = GraphState(
+        target_spec=make_target_spec(),
+        candidates=[make_candidate("cand-0-rev0"), make_candidate("cand-1-rev0")],
+    )
+
+    update = make_property_estimator_node([], llm)(state)
+
+    assert {e.candidate_id for e in update["property_estimates"]} == {
+        "cand-0-rev0",
+        "cand-1-rev0",
+    }
+    # One conversation per candidate, not one long shared conversation.
+    assert llm.tool_invokes == 2
+    prompts = [
+        next(m.content for m in messages if m.type == "human")
+        for messages in llm.message_log
+    ]
+    assert sum("cand-0-rev0" in p for p in prompts) == 1
+    assert sum("cand-1-rev0" in p for p in prompts) == 1
+
+
 def test_no_new_candidates_is_a_noop():
     llm = FakeToolCallingLLM()
     state = GraphState(target_spec=make_target_spec())

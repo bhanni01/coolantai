@@ -12,6 +12,7 @@ when ranking candidates.
 
 from typing import Literal, get_args
 
+from langchain_core.runnables import chain
 from pydantic import BaseModel, ConfigDict
 
 from coolant_copilot.state import (
@@ -74,8 +75,13 @@ PRIORITY_WEIGHTS: dict[OptimizationPriority, CriticWeights] = {
 }
 
 
+@chain
 def resolve_target_spec(profile: DatacenterProfile) -> TargetSpec:
-    """Deterministically expand a profile into the full TargetSpec (pure)."""
+    """Deterministically expand a profile into the full TargetSpec (pure).
+
+    @chain makes this a Runnable — call it with .invoke(profile) — so the
+    resolution appears as a named step in LangSmith traces.
+    """
     targets: list[PropertyTarget] = [
         PropertyTarget(
             property=PropertyName.THERMAL_CONDUCTIVITY,

@@ -12,7 +12,19 @@ import type { RunPhase } from './lib/types'
 const TOTAL_NODES = 6
 
 export default function App() {
-  const { phase, nodes, logs, loop, result, error, start, reset } = useRun()
+  const {
+    phase,
+    nodes,
+    logs,
+    loop,
+    result,
+    error,
+    sources,
+    noSourcesAboveThreshold,
+    crossChecks,
+    start,
+    reset,
+  } = useRun()
   const [profile, setProfile] = useState(DEFAULT_PROFILE)
 
   const doneCount = useMemo(
@@ -101,7 +113,11 @@ export default function App() {
 
       {/* Pipeline diagram */}
       <Panel title="Pipeline" eyebrow="research → generator → evaluate ∥ → critic ↺ → planner">
-        <PipelineDiagram nodes={nodes} />
+        <PipelineDiagram
+          nodes={nodes}
+          sources={sources}
+          noSourcesAboveThreshold={noSourcesAboveThreshold}
+        />
       </Panel>
 
       {/* Stat row */}
@@ -113,7 +129,7 @@ export default function App() {
       {/* Log + results */}
       <div className="grid min-h-[440px] flex-1 grid-cols-1 gap-5 xl:grid-cols-2">
         <LiveLog logs={logs} />
-        <ResultsPanel result={result} />
+        <ResultsPanel result={result} crossChecks={crossChecks} />
       </div>
 
       <footer className="pt-1 text-center font-mono text-[10px] text-ink-faint">

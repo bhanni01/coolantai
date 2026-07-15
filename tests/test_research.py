@@ -4,10 +4,12 @@ import pytest
 from langchain_core.documents import Document
 from langchain_core.embeddings import DeterministicFakeEmbedding
 from langchain_core.messages import AIMessage
+from langchain_core.vectorstores import VectorStore
 
 from coolant_copilot.ingestion import get_vectorstore, ingest
 from coolant_copilot.nodes.research import (
     MAX_CONTEXT_TOKENS,
+    MMR_SEARCH_KWARGS,
     BriefDraft,
     FindingDraft,
     _select_within_budget,
@@ -214,6 +216,165 @@ def test_research_maps_findings_to_selected_chunk_positions(spec, vectorstore):
     brief = research(spec, vectorstore, llm=fake)
 
     assert [f.id for f in brief.findings] == ["rf-0"]
+
+
+class SpyVectorStore(VectorStore):
+    """Records retriever calls; relevance pairs drive the threshold gate."""
+
+    def __init__(self, docs=None, relevance=None):
+        self.docs = docs if docs is not None else [
+            Document("Ester fluids reach 0.15 W/m·K.", metadata={"source": "esters.txt"})
+        ]
+        self.relevance = relevance  # list[(Document, score)] for threshold search
+        self.mmr_kwargs: list[dict] = []
+        self.threshold_kwargs: list[dict] = []
+
+    @classmethod
+    def from_texts(cls, texts, embedding, metadatas=None, **kwargs):
+        raise NotImplementedError
+
+    def similarity_search(self, query, k=4, **kwargs):
+        return list(self.docs)
+
+    def max_marginal_relevance_search(self, query, k=4, fetch_k=20, lambda_mult=0.5, **kwargs):
+        self.mmr_kwargs.append({"k": k, "fetch_k": fetch_k, "lambda_mult": lambda_mult})
+        return list(self.docs)
+
+    def similarity_search_with_relevance_scores(self, query, k=4, score_threshold=None, **kwargs):
+        self.threshold_kwargs.append({"k": k, "score_threshold": score_threshold})
+        pairs = self.relevance if self.relevance is not None else [(d, 1.0) for d in self.docs]
+        if score_threshold is not None:
+            pairs = [(d, s) for d, s in pairs if s >= score_threshold]
+        return pairs
+
+
+def test_search_chroma_retrieves_via_mmr(spec):
+    store = SpyVectorStore()
+    fake = FakeStructuredLLM(BriefDraft(overview="x", findings=[], gaps=[]))
+
+    research(spec, store, llm=fake)
+
+    # Every search_chroma call went through the MMR retriever with the
+    # configured diversity kwargs — no plain similarity_search.
+    assert store.mmr_kwargs
+    assert all(kw == MMR_SEARCH_KWARGS for kw in store.mmr_kwargs)
+
+
+def test_below_threshold_is_distinct_from_empty_collection(spec):
+    # Store has content, but nothing scores above the threshold.
+    store = SpyVectorStore(relevance=[])
+    fake = FakeStructuredLLM(BriefDraft(overview="x", findings=[], gaps=[]))
+
+    brief = research(spec, store, llm=fake, score_threshold=0.5)
+
+    assert fake.calls == 0  # nothing gathered → no distillation call
+    assert brief.findings == []
+    # The gate was consulted with the configured threshold...
+    assert store.threshold_kwargs
+    assert all(kw["score_threshold"] == 0.5 for kw in store.threshold_kwargs)
+    # ...and nothing was fetched through MMR for the gated queries.
+    assert store.mmr_kwargs == []
+    # Distinct wording from the empty-collection fallback.
+    assert "above threshold" in brief.overview
+    assert brief.overview != "No relevant sources found in the literature database."
+
+
+def test_threshold_pass_still_returns_chunks(spec):
+    store = SpyVectorStore(relevance=None)  # everything scores 1.0
+    fake = FakeStructuredLLM(
+        BriefDraft(
+            overview="ok",
+            findings=[FindingDraft(chunk_index=0, summary="s", relevance="r")],
+            gaps=[],
+        )
+    )
+
+    brief = research(spec, store, llm=fake, score_threshold=0.5)
+
+    assert store.threshold_kwargs  # gate consulted
+    assert store.mmr_kwargs  # and retrieval proceeded via MMR
+    assert [f.id for f in brief.findings] == ["rf-0"]
+
+
+def test_seed_retrieval_runs_before_the_tool_loop(spec):
+    # Even if the LLM never issues a search, the deterministic seed
+    # retrieval (RunnableParallel: context=retriever, spec=passthrough)
+    # already gathered chunks for the brief.
+    store = SpyVectorStore()
+    fake = FakeStructuredLLM(
+        BriefDraft(
+            overview="seeded",
+            findings=[FindingDraft(chunk_index=0, summary="s", relevance="r")],
+            gaps=[],
+        ),
+        search_queries=(),  # LLM contributes no queries at all
+    )
+
+    brief = research(spec, store, llm=fake)
+
+    assert store.mmr_kwargs == [MMR_SEARCH_KWARGS]  # exactly the seed query
+    assert [f.id for f in brief.findings] == ["rf-0"]
+    assert brief.overview == "seeded"
+
+
+def capture_details(monkeypatch) -> list[dict]:
+    """Route streaming.emit_detail chunks into a list (normally they only
+    exist inside a LangGraph custom stream)."""
+    events: list[dict] = []
+    monkeypatch.setattr(
+        "coolant_copilot.streaming.get_stream_writer", lambda: events.append
+    )
+    return events
+
+
+def test_research_emits_source_retrieved_detail_per_gathered_chunk(spec, monkeypatch):
+    events = capture_details(monkeypatch)
+    store = SpyVectorStore()  # one doc; relevance defaults to 1.0
+    fake = FakeStructuredLLM(BriefDraft(overview="x", findings=[], gaps=[]))
+
+    research(spec, store, llm=fake)
+
+    details = [e for e in events if e["detail_type"] == "source_retrieved"]
+    # The single doc is gathered once (dedup across seed + tool queries).
+    assert len(details) == 1
+    assert details[0]["node_name"] == "research"
+    assert details[0]["payload"] == {
+        "source_document": "esters.txt",
+        "similarity_score": 1.0,
+    }
+
+
+def test_research_emits_one_muted_detail_when_threshold_filters_everything(spec, monkeypatch):
+    events = capture_details(monkeypatch)
+    store = SpyVectorStore(relevance=[])  # content exists, nothing clears the gate
+    fake = FakeStructuredLLM(BriefDraft(overview="x", findings=[], gaps=[]))
+
+    research(spec, store, llm=fake, score_threshold=0.5)
+
+    details = [e for e in events if e["detail_type"] == "source_retrieved"]
+    assert details == [
+        {
+            "node_name": "research",
+            "detail_type": "source_retrieved",
+            "payload": {"no_sources_above_threshold": True},
+        }
+    ]
+
+
+def test_source_detail_score_is_none_when_store_has_no_score_support(spec, monkeypatch):
+    events = capture_details(monkeypatch)
+
+    class NoScoreStore(SpyVectorStore):
+        def similarity_search_with_relevance_scores(self, query, k=4, **kwargs):
+            raise NotImplementedError
+
+    fake = FakeStructuredLLM(BriefDraft(overview="x", findings=[], gaps=[]))
+
+    research(spec, NoScoreStore(), llm=fake)
+
+    details = [e for e in events if e["detail_type"] == "source_retrieved"]
+    assert len(details) == 1
+    assert details[0]["payload"]["similarity_score"] is None
 
 
 def test_research_empty_store_skips_llm(spec, tmp_path):

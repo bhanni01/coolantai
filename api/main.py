@@ -60,7 +60,7 @@ async def health() -> dict:
 @app.post("/run", status_code=202)
 async def start_run(profile: DatacenterProfile, graph=Depends(get_graph)) -> dict:
     """Resolve the profile server-side, start a background run, return its id."""
-    spec = resolve_target_spec(profile)
+    spec = resolve_target_spec.invoke(profile)
     weights = resolve_critic_weights(profile)
     run_id = uuid4().hex
     session = registry.create(run_id)

@@ -1,7 +1,8 @@
-import { DIAGRAM_H, DIAGRAM_W, EDGES, NODE_LAYOUT } from '../lib/pipeline'
+import { DIAGRAM_H, DIAGRAM_W, EDGES, NODE_BY_ID, NODE_LAYOUT } from '../lib/pipeline'
 import type { EdgeDef } from '../lib/pipeline'
-import type { NodeStateMap } from '../lib/types'
+import type { NodeStateMap, SourceChip } from '../lib/types'
 import { PipelineNode } from './PipelineNode'
+import { SourceChips } from './SourceChips'
 
 const TEAL = '#4fc3b0'
 const COPPER = '#d98e4a'
@@ -34,7 +35,19 @@ function edgeVisual(edge: EdgeDef, nodes: NodeStateMap): EdgeVisual {
   }
 }
 
-export function PipelineDiagram({ nodes }: { nodes: NodeStateMap }) {
+interface PipelineDiagramProps {
+  nodes: NodeStateMap
+  sources: SourceChip[]
+  noSourcesAboveThreshold: boolean
+}
+
+export function PipelineDiagram({
+  nodes,
+  sources,
+  noSourcesAboveThreshold,
+}: PipelineDiagramProps) {
+  const research = nodes.research
+  const researchNode = NODE_BY_ID.research
   return (
     <div className="w-full px-4 py-5">
       <svg
@@ -99,6 +112,20 @@ export function PipelineDiagram({ nodes }: { nodes: NodeStateMap }) {
             </foreignObject>
           )
         })}
+
+        {/* Live retrieved-source chips, tucked directly under the research node. */}
+        <foreignObject
+          x={researchNode.x}
+          y={researchNode.y + researchNode.h + 8}
+          width={205}
+          height={DIAGRAM_H - (researchNode.y + researchNode.h + 8)}
+        >
+          <SourceChips
+            sources={sources}
+            noSources={noSourcesAboveThreshold}
+            active={research.status === 'active'}
+          />
+        </foreignObject>
       </svg>
     </div>
   )

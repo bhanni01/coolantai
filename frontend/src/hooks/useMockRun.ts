@@ -1,12 +1,14 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { MOCK_RESULT, TIMELINE } from '../lib/mockRun'
 import type {
+  CrossCheck,
   LogEntry,
   NodeName,
   NodeStateMap,
   RunController,
   RunPhase,
   RunResult,
+  SourceChip,
 } from '../lib/types'
 
 const ALL_NODES: NodeName[] = [
@@ -43,6 +45,8 @@ export function useMockRun(): RunController {
   const [logs, setLogs] = useState<LogEntry[]>([])
   const [loop, setLoop] = useState(0)
   const [result, setResult] = useState<RunResult | null>(null)
+  const [sources, setSources] = useState<SourceChip[]>([])
+  const [crossChecks, setCrossChecks] = useState<Record<string, CrossCheck[]>>({})
 
   const runIdRef = useRef(0)
   const logIdRef = useRef(0)
@@ -66,6 +70,8 @@ export function useMockRun(): RunController {
       setLogs([])
       setResult(null)
       setLoop(0)
+      setSources([])
+      setCrossChecks({})
       appendLogs([
         { node: 'system', message: 'Run started — spec "DC-Coolant-A"', level: 'info', loop: 0 },
       ])
@@ -92,7 +98,20 @@ export function useMockRun(): RunController {
         })
         setLoop(beat.loop)
 
-        await delay(beat.durationMs)
+        // Stream source chips in while the node is still active — mirrors the
+        // live `source_retrieved` detail events arriving mid-node.
+        if (beat.sources?.length) {
+          const chips = beat.sources
+          const step = beat.durationMs / (chips.length + 1)
+          for (const chip of chips) {
+            await delay(step)
+            if (!live()) return
+            setSources((prev) => [...prev, chip])
+          }
+          await delay(step)
+        } else {
+          await delay(beat.durationMs)
+        }
         if (!live()) return
 
         setNodes((prev) => {
@@ -102,6 +121,17 @@ export function useMockRun(): RunController {
           }
           return next
         })
+        // Cross-checks land as the property_estimator beat completes, keyed by
+        // candidate id (mirrors the live `cross_check` detail events).
+        if (beat.crossChecks?.length) {
+          setCrossChecks((prev) => {
+            const next = { ...prev }
+            for (const c of beat.crossChecks!) {
+              next[c.candidateId] = [...(next[c.candidateId] ?? []), c]
+            }
+            return next
+          })
+        }
         appendLogs(beat.logs.map((l) => ({ ...l, loop: beat.loop })))
 
         await delay(180)
@@ -131,10 +161,24 @@ export function useMockRun(): RunController {
     setLogs([])
     setLoop(0)
     setResult(null)
+    setSources([])
+    setCrossChecks({})
   }, [])
 
   // Cancel on unmount.
   useEffect(() => () => void runIdRef.current++, [])
 
-  return { phase, nodes, logs, loop, result, error: null, start, reset }
+  return {
+    phase,
+    nodes,
+    logs,
+    loop,
+    result,
+    error: null,
+    sources,
+    noSourcesAboveThreshold: false,
+    crossChecks,
+    start,
+    reset,
+  }
 }

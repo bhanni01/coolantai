@@ -1,9 +1,16 @@
 from pathlib import Path
 
 import pytest
+from langchain_core.documents import Document
 from langchain_core.embeddings import DeterministicFakeEmbedding
 
-from coolant_copilot.ingestion import get_vectorstore, ingest
+from coolant_copilot.ingestion import (
+    CHUNK_OVERLAP,
+    CHUNK_SIZE,
+    chunk_documents,
+    get_vectorstore,
+    ingest,
+)
 
 SAMPLE_TEXT = (
     "Propylene glycol aqueous mixtures are widely used heat transfer fluids. "
@@ -65,6 +72,23 @@ def test_new_file_adds_only_new_chunks(source_dir, persist_dir, embeddings):
 
     assert second["added"] > 0
     assert second["skipped"] == first["added"]
+
+
+def test_chunking_overlaps_split_boundaries():
+    # The splitter must carry a 15-20% token overlap so sentences at split
+    # boundaries appear in both neighboring chunks.
+    assert 0.15 <= CHUNK_OVERLAP / CHUNK_SIZE <= 0.20
+
+    long_doc = Document(
+        " ".join(f"Sentence number {i} about coolant chemistry." for i in range(400)),
+        metadata={"source": "long.txt"},
+    )
+    chunks = chunk_documents([long_doc])
+
+    assert len(chunks) > 1
+    for left, right in zip(chunks, chunks[1:]):
+        # The head of each chunk repeats text from the tail of the previous.
+        assert right.page_content[:40] in left.page_content
 
 
 def test_missing_source_dir_raises(tmp_path, embeddings):
